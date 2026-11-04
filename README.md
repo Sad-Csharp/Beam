@@ -21,9 +21,11 @@ No camera handy? Use **Copy pairing link** on the PC and paste it into **Have a 
 - **Text box:** type or paste, then send with the button or Ctrl/⌘+Enter. Very long text (over ~400,000 characters) is sent as a `.txt` file.
 - **Files:** any type, several at once. On iPhone pick from Files (including Downloads), Photos or Camera. On desktop drag and drop, or press Ctrl/⌘+V anywhere to send the clipboard.
 - **Receiving files:** desktop auto-saves to Downloads (can be turned off). iPhone gets **Save / Share** for Files or Photos. Images show a preview.
+- **Huge files:** incoming files stream straight to the device's private storage (not memory), so the limit is free space, not RAM. Tested with a 200 MB transfer using about 3 MB of memory on the receiver. A built-in flow control keeps the sender from outrunning the receiver's disk.
 - **Both directions**, with progress, speed and "Delivered ✓" confirmation.
 - **Clipboard history:** the last 20 text items you sent or received, with search, **Pin**, **Send again**, **Delete** and **Clear**. Stored only on that device; switch it off any time.
 - **Connection indicator:** shows **Direct** (device to device) or **Relay** (through a TURN server).
+- **Version display:** the footer shows the running version (for example `Beam v2.1.0`). Tap it to check for a newer release; if one is live it says so and updates in one tap.
 - **Installable app (PWA):** Home Screen icon, offline app shell, automatic updates that remove the old cached version.
 
 ## Security
@@ -46,17 +48,21 @@ Most networks connect directly. Some corporate or guest Wi-Fi and cellular netwo
 - **Cloudflare (free tier):** deploy `turn-worker/worker.js` as a Cloudflare Worker (setup steps are at the top of the file) and put its URL in `turnCredentialsUrl`. Credentials are short-lived and only handed to your site's origin.
 
 ## Updating
-Push changes to `main`. Devices pick up the new version on next open (network first, cache fallback). If you change shipped files, bump `VERSION` in `sw.js`; activation then deletes every older Beam cache so nothing stale is left behind.
+Push changes to `main` and bump `BEAM_VERSION` in `version.js` (the one place the version lives). Devices pick up the new version on next open (network first, cache fallback) and the footer shows the new number once it is live. The service worker keys its cache to that version, and activation deletes every older Beam cache so nothing stale is left behind.
 
 ## Limits
+- **File size:** limited by free storage on the receiving device (Beam refuses a file up front if it won't fit). On browsers without disk streaming it falls back to memory with a cap of 500 MB on iPhone and 2 GB on desktop. Sending has no limit.
+- **Received files are temporary.** They live in Beam's private storage until you tap **Remove**, tap **Clear received files** in the footer, or reopen Beam (which clears leftovers from earlier sessions). Save them to Files/Downloads first. This avoids leaving junk behind, but a large file that is saved and not removed uses disk space twice until then.
+- iOS suspends web pages in the background, so keep Beam on screen during big transfers (it keeps the screen awake). An interrupted transfer fails cleanly and can be resent.
 - iOS shows a "Paste" bubble whenever a web page reads the clipboard. Apple does not allow removing it. Receiving text on iPhone also needs a tap on **Copy** unless the page is in the foreground and allowed.
 - iOS Safari cannot add web apps to the Share Sheet, and nothing syncs while Beam is closed. Both devices need it open.
-- One device is connected to the computer at a time.
-- Receive size caps: 500 MB on iPhone, 2 GB on desktop. No folder sync; sends are manual.
+- One device is connected to the computer at a time. No folder sync; sends are manual.
 - Needs internet for the first connection.
 
 ## Files
 - `index.html`, `style.css`, `app.js`: the app
+- `opfs-worker.js`: background worker that streams incoming files to storage
+- `version.js`: the version number (single source of truth)
 - `config.js`: your settings (STUN/TURN, signaling server)
 - `sw.js`, `manifest.webmanifest`, `icons/`: installable app and offline support
 - `vendor/`: bundled libraries (PeerJS, qrcode-generator, jsQR) with licenses in `NOTICE.md`

@@ -19,6 +19,9 @@ const PING_MS = 4000, DEAD_MS = 16000;
 const TOKEN_MS = 5 * 60 * 1000;          // pairing QR lifetime
 const HINT_MS = 20000;                   // show a "can't connect" hint after this long
 const HIST_MAX = 20, HIST_TEXT = 20000;  // clipboard history limits
+const PROTO = 2;                         // protocol level: 2 adds sender flow control for big files
+const WIN = 32 * 1024 * 1024;            // max unacknowledged bytes in flight per file
+const APP_VERSION = self.BEAM_VERSION || 'dev';
 const UNSAFE_EXT = /\.(exe|msi|bat|cmd|com|scr|ps1|vbs|vbe|js|jse|jar|app|dmg|pkg|sh|lnk|hta|reg|apk)$/i;
 
 /* ======================= HELPERS ======================= */
@@ -32,7 +35,6 @@ const rand = (n = 16) => [...crypto.getRandomValues(new Uint8Array(n))].map(b =>
 const UA = navigator.userAgent;
 const isIOS = /iPhone|iPad|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isMobile = isIOS || /Android/.test(UA);
-const MAX_RX = isIOS ? 500e6 : 2e9;
 const label = /iPhone/.test(UA) ? 'iPhone' : isIOS ? 'iPad' : /Android/.test(UA) ? 'Android' : /Mac/.test(navigator.platform) ? 'Mac' : /Win/.test(navigator.platform) ? 'Windows PC' : 'Computer';
 const fmt = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : n < 1073741824 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1073741824).toFixed(2) + ' GB';
 const cleanName = n => (String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+/, '').slice(0, 120)) || 'file';
@@ -50,7 +52,7 @@ async function codeOf(token) {
 
 /* ======================= STATE ======================= */
 let role, hostId, peer, active = null, activeKey = null, pending = null, lastRx = 0, pingIv = null, wake = null;
-let denied = false, backoff = 1000, gen = 0, hintT = null, peerName = '';
+let denied = false, backoff = 1000, gen = 0, hintT = null, peerName = '', peerProto = 1;
 const deviceKey = ls.get('beam.dk') || (() => { const k = rand(16); ls.set('beam.dk', k); return k; })();
 
 // Paired devices: key -> { name, added }. Migrates the old array format.
@@ -169,12 +171,12 @@ async function joinNow() {
   if (role !== 'join' || !peer || active) return;
   const c = peer.connect(hostId, { serialization: 'raw', reliable: true });
   pending = c;
-  c.on('open', () => { c.send(JSON.stringify({ t: 'hello', key: deviceKey, name: label, tok })); });
+  c.on('open', () => { c.send(JSON.stringify({ t: 'hello', key: deviceKey, name: label, tok, p: PROTO })); });
   c.on('data', d => {
     const m = parse(d);
     if (c !== active) {
       if (m && m.t === 'welcome') {
-        active = c; pending = null; ls.del('beam.tok'); $('#joinCodeWrap').classList.add('hide');
+        active = c; pending = null; peerProto = Number(m.p) || 1; ls.del('beam.tok'); $('#joinCodeWrap').classList.add('hide');
         onConnected(String(m.name || 'Computer').slice(0, 40), c);
       } else if (m && m.t === 'denied') {
         denied = true; clearTimeout(hintT);
@@ -250,8 +252,8 @@ function onIncoming(c) {
     if (reason) { deny(c, reason); return; }
     ok = true; clearTimeout(to);
     if (active && active !== c) { const old = active; active = null; try { old.close(); } catch { /* ignore */ } }
-    active = c; activeKey = m.key;
-    try { c.dataChannel.send(JSON.stringify({ t: 'welcome', name: label })); } catch { /* channel gone */ }
+    active = c; activeKey = m.key; peerProto = Number(m.p) || 1;
+    try { c.dataChannel.send(JSON.stringify({ t: 'welcome', name: label, p: PROTO })); } catch { /* channel gone */ }
     onConnected(String(m.name || 'Device').slice(0, 40), c);
     renderDevices();
   });
@@ -358,7 +360,7 @@ function addItem(dir) {
   const it = el('div', 'item'); const meta = el('div', 'meta');
   const l = el('span', null, (dir === 'out' ? 'Sent' : 'Received') + ' · ' + timeStr(Date.now()));
   const st = el('span', null, ''); meta.append(l, st); it.append(meta); $('#feed').prepend(it);
-  while ($('#feed').children.length > 60) $('#feed').lastChild.remove();
+  while ($('#feed').children.length > 60) { const old = $('#feed').lastChild; if (old.__cleanup) old.__cleanup(); old.remove(); }
   return { it, st, set(t) { st.textContent = t; } };
 }
 function showText(dir, text) {
@@ -408,9 +410,11 @@ async function pump() {
 async function sendOne(f) {
   const id = rand(6), name = cleanName(f.name), x = addItem('out'); const bar = el('div', 'bar'); const fill = el('i'); bar.append(fill);
   x.it.append(el('div', 'name', name), el('div', 'mute', fmt(f.size)), bar);
-  curSend = { id, x };
+  const cs = { id, x, sent: 0, acked: 0, wake: null };
+  curSend = cs;
   x.set('Sending…');
   const dc = active.dataChannel; const t0 = Date.now(); let off = 0;
+  const windowed = peerProto >= 2; // receiver reports progress, so we never outrun its disk
   try {
     if (!tx({ t: 'file', id, name, size: f.size, mime: f.type || '' })) throw new Error('closed');
     while (off < f.size) {
@@ -419,7 +423,10 @@ async function sendOne(f) {
         if (aborted.has(id)) throw new Error('rejected');
         if (!active || dc.readyState !== 'open') throw new Error('Connection lost');
         const w = drain(dc); if (w) await w;
-        dc.send(new Uint8Array(buf, o, Math.min(CH, buf.byteLength - o)));
+        while (windowed && cs.sent - cs.acked > WIN && active && !aborted.has(id)) await new Promise(r => { cs.wake = r; setTimeout(r, 500); });
+        if (aborted.has(id)) throw new Error('rejected');
+        const len = Math.min(CH, buf.byteLength - o);
+        dc.send(new Uint8Array(buf, o, len)); cs.sent += len;
       }
       off += buf.byteLength; fill.style.width = (off / f.size * 100) + '%';
       x.set(`${Math.round(off / f.size * 100)}% · ${fmt(off / Math.max(.2, (Date.now() - t0) / 1000))}/s`);
@@ -438,8 +445,53 @@ function failTransfers(why) {
   outFiles.clear();
   for (const x of outText.values()) if (x.pending) x.set('Not confirmed');
   outText.clear();
-  if (inc) { inc.x.it.classList.add('err'); inc.x.set(why); inc = null; }
+  if (inc) { inc.x.it.classList.add('err'); inc.x.set(why); if (inc.disk) removeTemp(inc.id); inc = null; }
 }
+
+/* ======================= DISK-BACKED RECEIVE (OPFS worker) ======================= */
+// Incoming files stream to the browser's private storage, so the size limit is free space, not memory.
+// If the browser can't do that, we fall back to in-memory buffering with a conservative cap.
+const rx = { w: null, ok: false, calls: new Map(), n: 0, avail: 0, temp: 0 };
+const memCap = () => isIOS ? 500e6 : 2e9;
+const maxRx = () => rx.ok ? Math.max(0, rx.avail - 64e6) : memCap();
+function wcall(msg, transfer) {
+  return new Promise((res, rej) => {
+    const rid = ++rx.n; rx.calls.set(rid, { res, rej });
+    rx.w.postMessage({ ...msg, rid }, transfer || []);
+    setTimeout(() => { if (rx.calls.delete(rid)) rej(new Error('timeout')); }, 60000);
+  });
+}
+async function refreshQuota() {
+  try { const e = await navigator.storage.estimate(); rx.avail = Math.max(0, (e.quota || 0) - (e.usage || 0)) || 4e9; } catch { rx.avail = 4e9; }
+}
+function removeTemp(id) { if (rx.ok) wcall({ op: 'remove', id }).catch(() => { /* already gone */ }); }
+async function refreshTemp() {
+  if (!rx.ok) return;
+  try { rx.temp = (await wcall({ op: 'usage' })).bytes; } catch { return; }
+  const b = $('#btnTemp'); b.textContent = `Clear received files (${fmt(rx.temp)})`; b.classList.toggle('hide', rx.temp < 1);
+}
+function initDisk() {
+  if (!window.Worker || !navigator.storage || !navigator.storage.getDirectory) return;
+  try { rx.w = new Worker('opfs-worker.js'); } catch { return; }
+  rx.w.onerror = () => { rx.ok = false; };
+  rx.w.onmessage = e => {
+    const m = e.data;
+    if (m.rid && rx.calls.has(m.rid)) { const c = rx.calls.get(m.rid); rx.calls.delete(m.rid); if (m.error) c.rej(new Error(m.error)); else c.res(m); return; }
+    if (m.op === 'wrote' && inc && inc.id === m.id && peerProto >= 2) tx({ t: 'prog', id: m.id, got: m.total });
+    else if (m.op === 'error' && inc && inc.id === m.id) { tx({ t: 'rej', id: inc.id, reason: 'Could not write to storage' }); inc.x.it.classList.add('err'); inc.x.set('Storage error: ' + String(m.error).slice(0, 60)); inc = null; }
+  };
+  wcall({ op: 'probe' })
+    .then(() => wcall({ op: 'wipe' }))   // clear anything left by a previous session
+    .then(() => { rx.ok = true; return refreshQuota(); })
+    .then(refreshTemp)
+    .catch(() => { rx.ok = false; });
+}
+$('#btnTemp').onclick = async () => {
+  if (!rx.ok) return;
+  if (!confirm('Delete all received files stored by Beam? Files you already saved elsewhere are not affected.')) return;
+  try { await wcall({ op: 'wipe', keep: inc ? inc.id : '' }); for (const it of document.querySelectorAll('#feed .item')) { if (it.__cleanup) { it.__cleanup = null; it.querySelector('.acts')?.remove(); it.classList.add('err'); } } } catch { /* ignore */ }
+  refreshQuota(); refreshTemp(); toast('Cleared');
+};
 
 /* ======================= RECEIVE ======================= */
 let inc = null;
@@ -447,9 +499,15 @@ function onData(c, d) {
   lastRx = Date.now();
   if (typeof d !== 'string') { // binary chunk
     if (!inc) return;
-    inc.got += d.byteLength != null ? d.byteLength : 0;
+    const buf = d instanceof ArrayBuffer ? d : ArrayBuffer.isView(d) ? d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength) : null;
+    if (!buf) return;
+    inc.got += buf.byteLength;
     if (inc.got > inc.size) { rejectIncoming('Too much data'); return; }
-    inc.chunks.push(d);
+    if (inc.disk) rx.w.postMessage({ op: 'write', id: inc.id, buf }, [buf]);
+    else {
+      inc.chunks.push(buf);
+      if (peerProto >= 2 && inc.got - inc.acked >= 4 * 1024 * 1024) { inc.acked = inc.got; tx({ t: 'prog', id: inc.id, got: inc.got }); }
+    }
     const n = Date.now();
     if (n - inc.last > 120) {
       inc.last = n; inc.fill.style.width = (inc.got / Math.max(1, inc.size) * 100) + '%';
@@ -473,35 +531,75 @@ function onData(c, d) {
     case 'file': {
       if (inc) rejectIncoming('Superseded');
       const size = Number(m.size);
-      if (!Number.isFinite(size) || size < 0 || typeof m.id !== 'string') return;
-      if (size > MAX_RX) { tx({ t: 'rej', id: m.id, reason: 'Too large for this device (' + fmt(MAX_RX) + ' max)' }); toast('Rejected a file over ' + fmt(MAX_RX)); return; }
+      if (!Number.isFinite(size) || size < 0 || typeof m.id !== 'string' || !/^[a-z0-9]{4,32}$/.test(m.id)) return;
+      const cap = maxRx();
+      if (size > cap) {
+        const why = rx.ok ? 'Not enough free space on this device (' + fmt(cap) + ' available)' : 'Too large for this browser (' + fmt(cap) + ' max)';
+        tx({ t: 'rej', id: m.id, reason: why }); toast(why); return;
+      }
       const x = addItem('in'), bar = el('div', 'bar'), fill = el('i'); bar.append(fill);
       const name = cleanName(m.name); x.it.append(el('div', 'name', name), el('div', 'mute', fmt(size)), bar);
-      inc = { id: m.id, name, size, mime: String(m.mime || '').slice(0, 100), chunks: [], got: 0, x, fill, bar, t0: Date.now(), last: 0 }; x.set('Receiving…');
+      const disk = rx.ok && size > 0;
+      inc = { id: m.id, name, size, mime: String(m.mime || '').slice(0, 100), chunks: [], got: 0, acked: 0, disk, x, fill, bar, t0: Date.now(), last: 0 };
+      if (disk) rx.w.postMessage({ op: 'open', id: m.id, name });
+      x.set('Receiving…');
       break;
     }
     case 'end': {
       if (!inc || inc.id !== m.id) return;
       const f = inc; inc = null;
-      if (f.got !== f.size) { f.x.it.classList.add('err'); f.x.set('Incomplete'); tx({ t: 'done', id: f.id, ok: false }); return; }
-      const blob = new Blob(f.chunks, { type: f.mime || 'application/octet-stream' }); f.chunks = null;
-      f.fill.style.width = '100%'; f.x.set('Received ✓'); finishFile(f, blob); tx({ t: 'done', id: f.id, ok: true }); break;
+      finishIncoming(f);
+      break;
     }
+    case 'prog': { if (curSend && curSend.id === m.id) { curSend.acked = Number(m.got) || 0; if (curSend.wake) curSend.wake(); } break; }
     case 'done': { const x = outFiles.get(m.id); if (x) { x.pending = false; x.set(m.ok ? 'Delivered ✓' : 'Failed'); if (!m.ok) x.it.classList.add('err'); outFiles.delete(m.id); } break; }
     case 'rej': { aborted.add(m.id); toast(String(m.reason || 'Rejected').slice(0, 80)); break; }
   }
 }
-function rejectIncoming(r) { if (!inc) return; tx({ t: 'rej', id: inc.id, reason: r }); inc.x.it.classList.add('err'); inc.x.set(r); inc = null; }
+function rejectIncoming(r) {
+  if (!inc) return;
+  tx({ t: 'rej', id: inc.id, reason: r }); inc.x.it.classList.add('err'); inc.x.set(r);
+  if (inc.disk) removeTemp(inc.id);
+  inc = null;
+}
+async function finishIncoming(f) {
+  const fail = (why) => { f.x.it.classList.add('err'); f.x.set(why); tx({ t: 'done', id: f.id, ok: false }); if (f.disk) removeTemp(f.id); };
+  if (f.got !== f.size) return fail('Incomplete');
+  let blob;
+  if (f.disk) {
+    try {
+      const r = await wcall({ op: 'close', id: f.id });
+      if (r.size !== f.size) return fail('Incomplete');
+      const root = await navigator.storage.getDirectory();
+      const dir = await (await root.getDirectoryHandle('beam-rx')).getDirectoryHandle(f.id);
+      let fh; try { fh = await dir.getFileHandle(f.name); } catch { fh = await dir.getFileHandle('file'); }
+      blob = (await fh.getFile()).slice(0, f.size, f.mime || 'application/octet-stream'); // disk-backed, not loaded into memory
+    } catch (e) { return fail('Could not save: ' + String((e && e.message) || e).slice(0, 60)); }
+  } else {
+    blob = new Blob(f.chunks, { type: f.mime || 'application/octet-stream' }); f.chunks = null;
+  }
+  f.fill.style.width = '100%'; f.x.set('Received ✓'); finishFile(f, blob); tx({ t: 'done', id: f.id, ok: true });
+  refreshQuota(); refreshTemp();
+}
 function finishFile(f, blob) {
   const url = URL.createObjectURL(blob), acts = el('div', 'acts');
   const save = () => { const a = document.createElement('a'); a.href = url; a.download = f.name; document.body.append(a); a.click(); a.remove(); };
-  const file = new File([blob], f.name, { type: blob.type });
   const b = el('button', 'sm', isIOS ? 'Save / Share' : 'Save'); acts.append(b);
   b.onclick = async () => {
-    if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+    if (isIOS && navigator.canShare) {
+      try {
+        const file = new File([blob], f.name, { type: blob.type });
+        if (navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); return; }
+      } catch (e) { if (e.name === 'AbortError') return; }
+    }
     save();
   };
-  if (blob.type.startsWith('image/')) { const im = el('img'); im.src = url; im.alt = f.name; im.style.cssText = 'max-width:100%;max-height:220px;border-radius:10px;align-self:flex-start'; f.x.it.append(im); }
+  const rm = el('button', 'sec sm', 'Remove');
+  const cleanup = () => { URL.revokeObjectURL(url); if (f.disk) removeTemp(f.id); };
+  rm.onclick = () => { cleanup(); f.x.it.classList.add('err'); f.x.set('Removed'); acts.remove(); f.x.it.querySelector('img')?.remove(); refreshTemp(); };
+  acts.append(rm);
+  f.x.it.__cleanup = cleanup;
+  if (blob.type.startsWith('image/') && f.size < 25e6) { const im = el('img'); im.src = url; im.alt = f.name; im.style.cssText = 'max-width:100%;max-height:220px;border-radius:10px;align-self:flex-start'; f.x.it.append(im); }
   f.x.it.append(acts);
   if (!isIOS && $('#autoSave').checked && !UNSAFE_EXT.test(f.name)) save();
   else if (!isIOS && UNSAFE_EXT.test(f.name)) toast('Executable file — not auto-saved');
@@ -622,8 +720,36 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell is optional */ }); });
 }
 
+/* ======================= VERSION / UPDATES ======================= */
+const verBtn = $('#ver');
+verBtn.textContent = 'Beam v' + APP_VERSION;
+async function latestVersion() {
+  const r = await fetch('version.js', { cache: 'no-store' });
+  const m = (await r.text()).match(/BEAM_VERSION\s*=\s*'([^']+)'/);
+  return m ? m[1] : null;
+}
+async function applyUpdate() {
+  if (sending || inc) { toast('Finish the current transfer first'); return; }
+  try { const reg = await navigator.serviceWorker?.getRegistration(); await reg?.update(); } catch { /* ignore */ }
+  location.reload();
+}
+async function checkUpdate(manual) {
+  try {
+    const v = await latestVersion();
+    if (v && v !== APP_VERSION) {
+      verBtn.textContent = `Beam v${APP_VERSION} · v${v} available, tap to update`;
+      verBtn.dataset.update = '1';
+      if (manual) { toast('Updating to v' + v + '…'); applyUpdate(); }
+    } else if (manual) toast('Beam is up to date (v' + APP_VERSION + ')');
+  } catch { if (manual) toast('Couldn’t check for updates. Are you online?'); }
+}
+verBtn.onclick = () => (verBtn.dataset.update ? applyUpdate() : checkUpdate(true));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkUpdate(false); });
+
 /* ======================= BOOT ======================= */
 if (!isSecureContext || location.protocol === 'file:') warn('Beam must be opened over HTTPS (not as a local file). Clipboard and connections need it. See the README.');
 renderHist();
 resolveRole();
 start();
+initDisk();
+setTimeout(() => checkUpdate(false), 3000);

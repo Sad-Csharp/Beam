@@ -1,9 +1,10 @@
 'use strict';
-// Beam service worker: offline app shell. Bump VERSION whenever shipped files change;
-// activation deletes every older Beam cache so no stale files are left behind.
-const VERSION = 'beam-v2';
+// Beam service worker: offline app shell. The cache name follows version.js, so every release
+// installs a fresh cache and activation deletes all older Beam caches (no stale leftovers).
+importScripts('version.js');
+const VERSION = 'beam-v' + self.BEAM_VERSION;
 const SHELL = [
-  './', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest',
+  './', 'index.html', 'style.css', 'app.js', 'config.js', 'version.js', 'opfs-worker.js', 'manifest.webmanifest',
   'vendor/peerjs.min.js', 'vendor/qrcode.js', 'vendor/jsqr.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png'
 ];
