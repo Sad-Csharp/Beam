@@ -727,7 +727,7 @@ addEventListener('hashchange', () => {
 
 /* ======================= PWA ======================= */
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* offline shell is optional */ }); });
+  addEventListener('load', () => { navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => { /* offline shell is optional */ }); });
 }
 
 /* ======================= VERSION / UPDATES ======================= */
@@ -738,9 +738,29 @@ async function latestVersion() {
   const m = (await r.text()).match(/BEAM_VERSION\s*=\s*'([^']+)'/);
   return m ? m[1] : null;
 }
+let updating = false;
 async function applyUpdate() {
   if (sending || inc) { toast('Finish the current transfer first'); return; }
-  try { const reg = await navigator.serviceWorker?.getRegistration(); await reg?.update(); } catch { /* ignore */ }
+  if (updating) return;
+  updating = true; verBtn.textContent = 'Updating…';
+  try {
+    // 1. Refresh the browser's HTTP cache (GitHub Pages lets it keep files ~10 minutes) so the reload
+    //    can't be served stale copies.
+    await Promise.all([...(self.BEAM_FILES || []), 'sw.js'].map(u => fetch(u, { cache: 'reload' }).catch(() => { /* offline: skip */ })));
+    // 2. Let the service worker install the new version and take over before we reload.
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) {
+      await reg.update();
+      const w = reg.installing || reg.waiting;
+      if (w && w.state !== 'activated') {
+        await new Promise(res => {
+          const done = () => { if (w.state === 'activated' || w.state === 'redundant') { w.removeEventListener('statechange', done); res(); } };
+          w.addEventListener('statechange', done); setTimeout(res, 8000);
+        });
+      }
+    }
+  } catch { /* fall through to reload */ }
+  try { sessionStorage.setItem('beam.updatedFrom', APP_VERSION); } catch { /* storage unavailable */ }
   location.reload();
 }
 async function checkUpdate(manual) {
@@ -764,3 +784,7 @@ resolveRole();
 start();
 initDisk();
 setTimeout(() => checkUpdate(false), 3000);
+try { // confirm a tap-to-update actually changed the running version
+  const from = sessionStorage.getItem('beam.updatedFrom'); sessionStorage.removeItem('beam.updatedFrom');
+  if (from) setTimeout(() => toast(from === APP_VERSION ? 'Still on v' + APP_VERSION + '. Tap the version to try again.' : 'Updated to v' + APP_VERSION), 600);
+} catch { /* storage unavailable */ }
