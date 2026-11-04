@@ -1,44 +1,63 @@
 # Beam
 
-Send your iPhone clipboard, text, photos and files to a Windows PC (or any desktop browser) and back, with **nothing to install on either device**. One page, peer-to-peer, encrypted.
+Send your iPhone clipboard, text, photos and files to a Windows PC (or any desktop browser) and back, with **nothing to install on either device**. Peer-to-peer and end-to-end encrypted.
 
 ## Quick start
-1. Open the hosted page on your PC. It shows a QR code.
-2. Scan it with the iPhone Camera and tap the banner. Click **Allow** on the PC.
-3. Done. After the first pairing, open the page on both devices and they reconnect automatically.
+1. Open Beam on your PC. It shows a QR code and a 4-digit verification code.
+2. Scan the QR with the iPhone Camera and tap the banner. The iPhone shows the same 4-digit code.
+3. On the PC, check the codes match and click **Allow**.
 
-No camera handy? Use **Copy pairing link** or **Share link** on the PC and open the link on the iPhone (AirDrop or Messages work well).
+After the first pairing, just open Beam on both devices and they reconnect automatically.
+
+### Add it to your Home Screen (recommended)
+In Safari tap **Share → Add to Home Screen**. Beam then opens full-screen like an app and loads instantly, even offline.
+
+> iOS keeps the Home Screen app's storage separate from Safari. If you pair in Safari first, open the Home Screen app and tap **Scan QR code** to pair it too. The scanner works inside the app, no Safari needed.
+
+No camera handy? Use **Copy pairing link** on the PC and paste it into **Have a pairing link?** on the iPhone (AirDrop or Messages work well).
 
 ## Features
-- **Clipboard:** **Send clipboard** pushes text or a copied image. Incoming text is auto-copied on the receiving device (can be turned off). Links get an **Open** button.
+- **Clipboard:** **Send clipboard** pushes text or a copied image. Incoming text is auto-copied (can be turned off). Links get an **Open** button.
 - **Text box:** type or paste, then send with the button or Ctrl/⌘+Enter. Very long text (over ~400,000 characters) is sent as a `.txt` file.
-- **Files:** any type, several at once. On iPhone, pick from Files (including Downloads), Photos or Camera. On desktop, drag and drop onto the page, or press Ctrl/⌘+V anywhere to send the clipboard (files included).
-- **Receiving files:** desktop auto-saves to Downloads (can be turned off); iPhone gets a **Save / Share** button for Files or Photos. Images show a preview.
-- **Both directions:** the PC can send to the iPhone just as easily.
-- **Live status:** progress and speed per file, plus "Delivered ✓" confirmation.
-
-## Hosting
-Beam needs HTTPS (clipboard access and secure connections require it). With GitHub Pages: **Settings → Pages → Deploy from a branch → `main` / root**. The page is then served at `https://<your-username>.github.io/Beam/`.
-
-## Reliability
-- Auto-reconnect after sleep, Wi-Fi changes and tab switches; heartbeat detects dead links.
-- Screen wake lock during transfers; interrupted transfers are marked failed instead of hanging.
-- Files stream in 64 KB chunks with backpressure, so large files do not exhaust phone memory.
-- Duplicate tabs and stale sessions are taken over cleanly.
+- **Files:** any type, several at once. On iPhone pick from Files (including Downloads), Photos or Camera. On desktop drag and drop, or press Ctrl/⌘+V anywhere to send the clipboard.
+- **Receiving files:** desktop auto-saves to Downloads (can be turned off). iPhone gets **Save / Share** for Files or Photos. Images show a preview.
+- **Both directions**, with progress, speed and "Delivered ✓" confirmation.
+- **Clipboard history:** the last 20 text items you sent or received, with search, **Pin**, **Send again**, **Delete** and **Clear**. Stored only on that device; switch it off any time.
+- **Connection indicator:** shows **Direct** (device to device) or **Relay** (through a TURN server).
+- **Installable app (PWA):** Home Screen icon, offline app shell, automatic updates that remove the old cached version.
 
 ## Security
 - Data travels over an encrypted WebRTC channel directly between your two devices. File contents never touch a server.
-- Pairing uses a random 128-bit code. New devices must be approved on the PC. **Reset pairing** revokes everything.
-- File names are sanitized, received text is never rendered as HTML, and executable file types are never auto-saved.
-- The public PeerJS broker is used only for the first handshake. To avoid third parties entirely, self-host a PeerJS server and set `PEER_OPTS` in `index.html`.
+- **One-time pairing codes:** the QR/link works once and expires after 5 minutes. A screenshot of an old code is useless, and repeated bad guesses rotate the code.
+- **Verification code:** both screens show the same 4-digit code. Only allow the device if they match.
+- **Paired devices list** with a **Revoke** button per device, plus **Reset pairing** to wipe everything.
+- A second device can't hijack an active connection; it is told the computer is busy.
+- File names are sanitized, received text is never rendered as HTML, executable file types are never auto-saved, and a strict Content Security Policy blocks injected scripts.
+- All libraries are bundled locally (`vendor/`), so Beam does not load third-party scripts.
+- The public PeerJS broker is used only for the first handshake (see `peer` in `config.js` to self-host).
+
+## Hosting
+Beam needs HTTPS. With GitHub Pages: **Settings → Pages → Deploy from a branch → `main` / root**. It is then served at `https://<your-username>.github.io/Beam/`.
+
+## Strict networks (TURN relay)
+Most networks connect directly. Some corporate or guest Wi-Fi and cellular networks block that, and Beam shows a hint after 20 seconds. Fix it with a TURN relay, still end-to-end encrypted. Edit `config.js`:
+
+- **Own TURN server:** add it to `iceServers` (`{ urls: 'turn:host:3478', username: '…', credential: '…' }`).
+- **Cloudflare (free tier):** deploy `turn-worker/worker.js` as a Cloudflare Worker (setup steps are at the top of the file) and put its URL in `turnCredentialsUrl`. Credentials are short-lived and only handed to your site's origin.
+
+## Updating
+Push changes to `main`. Devices pick up the new version on next open (network first, cache fallback). If you change shipped files, bump `VERSION` in `sw.js`; activation then deletes every older Beam cache so nothing stale is left behind.
 
 ## Limits
-- iOS shows a "Paste" bubble whenever a web page reads the clipboard. Apple does not allow removing it. Receiving text on iPhone also needs a tap on **Copy**.
-- iOS Safari cannot add web apps to the Share Sheet, and nothing syncs while the page is closed. Both devices need Beam open.
-- Receive size caps: 500 MB on iPhone, 2 GB on desktop.
-- No folder sync or continuous mirroring. Sends are manual.
-- Strict corporate or guest networks may block direct connections. Add a TURN server to the `ICE` list in `index.html`.
+- iOS shows a "Paste" bubble whenever a web page reads the clipboard. Apple does not allow removing it. Receiving text on iPhone also needs a tap on **Copy** unless the page is in the foreground and allowed.
+- iOS Safari cannot add web apps to the Share Sheet, and nothing syncs while Beam is closed. Both devices need it open.
+- One device is connected to the computer at a time.
+- Receive size caps: 500 MB on iPhone, 2 GB on desktop. No folder sync; sends are manual.
 - Needs internet for the first connection.
 
 ## Files
-- `index.html`: the entire app (HTML, CSS and JavaScript in one file).
+- `index.html`, `style.css`, `app.js`: the app
+- `config.js`: your settings (STUN/TURN, signaling server)
+- `sw.js`, `manifest.webmanifest`, `icons/`: installable app and offline support
+- `vendor/`: bundled libraries (PeerJS, qrcode-generator, jsQR) with licenses in `NOTICE.md`
+- `turn-worker/worker.js`: optional Cloudflare Worker for TURN credentials
