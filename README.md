@@ -17,16 +17,21 @@ In Safari tap **Share → Add to Home Screen**. Beam then opens full-screen like
 No camera handy? Use **Copy pairing link** on the PC and paste it into **Have a pairing link?** on the iPhone (AirDrop or Messages work well).
 
 ## Features
-- **Clipboard:** **Send clipboard** pushes text or a copied image. Incoming text is auto-copied (can be turned off). Links get an **Open** button.
+- **Clipboard:** **Send clipboard** pushes text or a copied image. Optionally auto-copy incoming text (off by default). Links get an **Open** button.
 - **Text box:** type or paste, then send with the button or Ctrl/⌘+Enter. Very long text (over ~400,000 characters) is sent as a `.txt` file.
 - **Files:** any type, several at once. On iPhone pick from Files (including Downloads), Photos or Camera. On desktop drag and drop, or press Ctrl/⌘+V anywhere to send the clipboard.
-- **Receiving files:** desktop auto-saves to Downloads (can be turned off). iPhone gets **Save / Share** for Files or Photos. Images show a preview.
+- **Receiving files:** desktop can auto-save to Downloads (off by default). iPhone gets **Save / Share** for Files or Photos. Images show a preview.
 - **Huge files:** incoming files stream straight to the device's private storage (not memory), so the limit is free space, not RAM. Tested with a 200 MB transfer using about 3 MB of memory on the receiver. A built-in flow control keeps the sender from outrunning the receiver's disk.
-- **Both directions**, with progress, speed and "Delivered ✓" confirmation.
-- **Clipboard history:** the last 20 text items you sent or received, with search, **Pin**, **Send again**, **Delete** and **Clear**. Stored only on that device; switch it off any time.
+- **Both directions**, with progress, speed and "Delivered ✓" confirmation. Every item shows which device sent it and where it went (for example `Sent · iPhone → Windows PC`).
+- **Remove anything:** every item in the list has a ✕ (it also cancels a transfer in progress and frees the stored file), and **Clear list** removes everything.
+- **Everything is opt-in:** *Auto-copy incoming text*, *Auto-save incoming files* and *Save text history* are all off by default.
+- **Clipboard history:** the last 20 text items you sent or received, with search, **Pin**, **Send again**, **Delete** and **Clear**. Off by default; turn it on with *Save text history on this device*. Stored only on that device.
 - **Connection indicator:** shows **Direct** (device to device) or **Relay** (through a TURN server).
 - **Version display:** the header shows the running version (small, next to the title, for example `v2.1.1`). Tap it to check for a newer release; if one is live it says so and updates in one tap.
 - **Installable app (PWA):** Home Screen icon, offline app shell, automatic updates that remove the old cached version.
+
+## Settings
+The three toggles are saved **per device and per browser** (in that browser's local storage). They do not sync between your phone and PC, and Safari and the Home Screen app each keep their own. Resetting pairing does not change them.
 
 ## Security
 - Data travels over an encrypted WebRTC channel directly between your two devices. File contents never touch a server.

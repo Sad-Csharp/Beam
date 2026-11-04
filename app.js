@@ -331,7 +331,7 @@ function histAdd(dir, text) {
   text = text.slice(0, HIST_TEXT);
   const i = hist.findIndex(h => h.text === text);
   const prev = i >= 0 ? hist.splice(i, 1)[0] : null;
-  hist.unshift({ id: rand(4), text, dir, ts: Date.now(), pin: prev ? !!prev.pin : false });
+  hist.unshift({ id: rand(4), text, dir, dev: peerName, ts: Date.now(), pin: prev ? !!prev.pin : false });
   let unpinned = 0;
   hist = hist.filter(h => h.pin || ++unpinned <= HIST_MAX);
   saveHist(); renderHist();
@@ -341,11 +341,11 @@ function renderHist() {
   const list = $('#histList'); list.replaceChildren();
   const items = hist.filter(h => !q || h.text.toLowerCase().includes(q)).sort((a, b) => (b.pin - a.pin) || (b.ts - a.ts));
   $('#histSummary').textContent = `Clipboard history${hist.length ? ' (' + hist.length + ')' : ''}`;
-  if (!items.length) { list.append(el('div', 'mute', hist.length ? 'No matches.' : 'Nothing yet. Items you send or receive show up here.')); return; }
+  if (!items.length) { list.append(el('div', 'mute', hist.length ? 'No matches.' : histEnabled() ? 'Nothing yet. Items you send or receive show up here.' : 'History is off. Turn on “Save text history on this device” below to keep items.')); return; }
   for (const h of items) {
     const row = el('div', 'hitem' + (h.pin ? ' pinned' : ''));
     row.append(el('div', 'htxt', h.text.length > 600 ? h.text.slice(0, 600) + '…' : h.text));
-    row.append(el('div', 'meta', `${h.dir === 'out' ? 'Sent' : 'Received'} · ${new Date(h.ts).toLocaleDateString([], { month: 'short', day: 'numeric' })} ${timeStr(h.ts)}`));
+    row.append(el('div', 'meta', `${h.dir === 'out' ? 'Sent' : 'Received'}${h.dev ? ' · ' + route(h.dir, h.dev) : ''} · ${new Date(h.ts).toLocaleDateString([], { month: 'short', day: 'numeric' })} ${timeStr(h.ts)}`));
     const acts = el('div', 'acts');
     const copy = el('button', 'sec sm', 'Copy'); copy.onclick = async () => { try { await navigator.clipboard.writeText(h.text); toast('Copied'); } catch { toast('Copy blocked'); } };
     const send = el('button', 'sec sm', 'Send again'); send.onclick = () => sendText(h.text);
@@ -356,11 +356,23 @@ function renderHist() {
 }
 
 /* ======================= FEED UI ======================= */
+// "Sent · iPhone → Windows PC" / "Received · Windows PC → iPhone"
+const route = (dir, dev) => dir === 'out' ? `${label} → ${dev || 'device'}` : `${dev || 'Device'} → ${label}`;
+function removeItem(it) {
+  if (inc && inc.x.it === it) rejectIncoming('Canceled');            // cancel an in-progress receive
+  if (curSend && curSend.x.it === it) aborted.add(curSend.id);       // cancel an in-progress send
+  if (it.__cleanup) it.__cleanup();                                  // free the stored file, if any
+  it.remove(); syncFeed(); refreshTemp();
+}
+function syncFeed() { $('#btnFeedClear').classList.toggle('hide', !$('#feed').children.length); }
 function addItem(dir) {
   const it = el('div', 'item'); const meta = el('div', 'meta');
-  const l = el('span', null, (dir === 'out' ? 'Sent' : 'Received') + ' · ' + timeStr(Date.now()));
-  const st = el('span', null, ''); meta.append(l, st); it.append(meta); $('#feed').prepend(it);
+  const l = el('span', null, `${dir === 'out' ? 'Sent' : 'Received'} · ${route(dir, peerName)} · ${timeStr(Date.now())}`);
+  const st = el('span', null, '');
+  const del = el('button', 'x', '✕'); del.title = 'Remove'; del.setAttribute('aria-label', 'Remove'); del.onclick = () => removeItem(it);
+  meta.append(l, st, del); it.append(meta); $('#feed').prepend(it);
   while ($('#feed').children.length > 60) { const old = $('#feed').lastChild; if (old.__cleanup) old.__cleanup(); old.remove(); }
+  syncFeed();
   return { it, st, set(t) { st.textContent = t; } };
 }
 function showText(dir, text) {
@@ -594,11 +606,7 @@ function finishFile(f, blob) {
     }
     save();
   };
-  const rm = el('button', 'sec sm', 'Remove');
-  const cleanup = () => { URL.revokeObjectURL(url); if (f.disk) removeTemp(f.id); };
-  rm.onclick = () => { cleanup(); f.x.it.classList.add('err'); f.x.set('Removed'); acts.remove(); f.x.it.querySelector('img')?.remove(); refreshTemp(); };
-  acts.append(rm);
-  f.x.it.__cleanup = cleanup;
+  f.x.it.__cleanup = () => { URL.revokeObjectURL(url); if (f.disk) removeTemp(f.id); }; // runs when the item is removed
   if (blob.type.startsWith('image/') && f.size < 25e6) { const im = el('img'); im.src = url; im.alt = f.name; im.style.cssText = 'max-width:100%;max-height:220px;border-radius:10px;align-self:flex-start'; f.x.it.append(im); }
   f.x.it.append(acts);
   if (!isIOS && $('#autoSave').checked && !UNSAFE_EXT.test(f.name)) save();
@@ -695,6 +703,8 @@ $('#sendTxt').onclick = () => { const t = $('#txt').value; if (!t.trim()) return
 $('#txt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('#sendTxt').click(); } });
 for (const k of ['autoCopy', 'autoSave', 'histOn']) { const c = $('#' + k), v = ls.get('beam.' + k); if (v !== null) c.checked = v === '1'; c.onchange = () => ls.set('beam.' + k, c.checked ? '1' : '0'); }
 $('#histSearch').addEventListener('input', renderHist);
+$('#histOn').addEventListener('change', renderHist);
+$('#btnFeedClear').onclick = () => { if (!confirm('Remove everything from this list?')) return; [...$('#feed').children].forEach(removeItem); };
 $('#histClear').onclick = () => { if (!confirm('Clear clipboard history? Pinned items are kept.')) return; hist = hist.filter(h => h.pin); saveHist(); renderHist(); };
 const drop = $('#drop');
 ['dragenter', 'dragover'].forEach(n => addEventListener(n, e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); drop.classList.add('over'); } }));

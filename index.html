@@ -74,11 +74,12 @@
       <div class="mute center" id="dropHint" style="margin-top:10px">Tip: drop files here, or press Ctrl/⌘+V anywhere to send your clipboard.</div>
     </div>
     <div style="display:flex;gap:18px;flex-wrap:wrap">
-      <label class="chk"><input type="checkbox" id="autoCopy" checked> Auto-copy incoming text</label>
-      <label class="chk" id="autoSaveWrap"><input type="checkbox" id="autoSave" checked> Auto-save incoming files</label>
+      <label class="chk"><input type="checkbox" id="autoCopy"> Auto-copy incoming text</label>
+      <label class="chk" id="autoSaveWrap"><input type="checkbox" id="autoSave"> Auto-save incoming files</label>
     </div>
   </section>
 
+  <div style="text-align:right"><button class="link hide" id="btnFeedClear">Clear list</button></div>
   <section id="feed" class="feed"></section>
 
   <!-- Clipboard history -->
@@ -88,7 +89,7 @@
       <input type="search" id="histSearch" placeholder="Search history" autocomplete="off">
       <div id="histList" class="hist" style="margin-top:0"></div>
       <div class="row">
-        <label class="chk" style="flex:2"><input type="checkbox" id="histOn" checked> Save text history on this device</label>
+        <label class="chk" style="flex:2"><input type="checkbox" id="histOn"> Save text history on this device</label>
         <button class="sec sm" id="histClear" style="flex:1">Clear</button>
       </div>
       <div class="mute">Only text is kept, only on this device. Pinned items stay until you remove them.</div>
