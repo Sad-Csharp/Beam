@@ -722,7 +722,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 
 /* ======================= VERSION / UPDATES ======================= */
 const verBtn = $('#ver');
-verBtn.textContent = 'Beam v' + APP_VERSION;
+verBtn.textContent = 'v' + APP_VERSION;
 async function latestVersion() {
   const r = await fetch('version.js', { cache: 'no-store' });
   const m = (await r.text()).match(/BEAM_VERSION\s*=\s*'([^']+)'/);
@@ -737,7 +737,8 @@ async function checkUpdate(manual) {
   try {
     const v = await latestVersion();
     if (v && v !== APP_VERSION) {
-      verBtn.textContent = `Beam v${APP_VERSION} · v${v} available, tap to update`;
+      verBtn.textContent = `v${APP_VERSION} → v${v}`;
+      verBtn.title = 'Update available, tap to update';
       verBtn.dataset.update = '1';
       if (manual) { toast('Updating to v' + v + '…'); applyUpdate(); }
     } else if (manual) toast('Beam is up to date (v' + APP_VERSION + ')');

@@ -25,7 +25,7 @@ No camera handy? Use **Copy pairing link** on the PC and paste it into **Have a 
 - **Both directions**, with progress, speed and "Delivered ✓" confirmation.
 - **Clipboard history:** the last 20 text items you sent or received, with search, **Pin**, **Send again**, **Delete** and **Clear**. Stored only on that device; switch it off any time.
 - **Connection indicator:** shows **Direct** (device to device) or **Relay** (through a TURN server).
-- **Version display:** the footer shows the running version (for example `Beam v2.1.0`). Tap it to check for a newer release; if one is live it says so and updates in one tap.
+- **Version display:** the header shows the running version (small, next to the title, for example `v2.1.1`). Tap it to check for a newer release; if one is live it says so and updates in one tap.
 - **Installable app (PWA):** Home Screen icon, offline app shell, automatic updates that remove the old cached version.
 
 ## Security
@@ -48,7 +48,7 @@ Most networks connect directly. Some corporate or guest Wi-Fi and cellular netwo
 - **Cloudflare (free tier):** deploy `turn-worker/worker.js` as a Cloudflare Worker (setup steps are at the top of the file) and put its URL in `turnCredentialsUrl`. Credentials are short-lived and only handed to your site's origin.
 
 ## Updating
-Push changes to `main` and bump `BEAM_VERSION` in `version.js` (the one place the version lives). Devices pick up the new version on next open (network first, cache fallback) and the footer shows the new number once it is live. The service worker keys its cache to that version, and activation deletes every older Beam cache so nothing stale is left behind.
+Push changes to `main` and bump `BEAM_VERSION` in `version.js` (the one place the version lives). Devices pick up the new version on next open (network first, cache fallback) and the header shows the new number once it is live. The service worker keys its cache to that version, and activation deletes every older Beam cache so nothing stale is left behind.
 
 ## Limits
 - **File size:** limited by free storage on the receiving device (Beam refuses a file up front if it won't fit). On browsers without disk streaming it falls back to memory with a cap of 500 MB on iPhone and 2 GB on desktop. Sending has no limit.

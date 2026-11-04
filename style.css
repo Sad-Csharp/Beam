@@ -6,6 +6,9 @@ body{padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-rig
 main{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 h1{font-size:28px;margin:0;letter-spacing:-.5px}
+.brand{display:flex;align-items:baseline;gap:8px;min-width:0}
+#ver{font-size:12px;font-weight:500;color:var(--mute);min-height:0;padding:6px 4px;white-space:nowrap}
+#ver[data-update="1"]{color:var(--acc);font-weight:600}
 .pill{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:14px;color:var(--mute);min-width:0}
 .pill #statusText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--mute);flex:none}
