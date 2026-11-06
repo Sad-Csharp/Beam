@@ -7,12 +7,12 @@ Send your iPhone clipboard, text, photos and files to a Windows PC (or any deskt
 2. Scan the QR with the iPhone Camera and tap the banner. The iPhone shows the same 4-digit code.
 3. On the PC, check the codes match and click **Allow**.
 
-After the first pairing, just open Beam on both devices and they reconnect automatically.
+**Pairing lasts only for the current session.** Closing the page on either device, tapping **Disconnect**, or losing the connection for more than a minute ends it, and the next connection needs a fresh QR scan. Brief drops (like switching apps for a moment) reconnect by themselves.
 
 ### Add it to your Home Screen (recommended)
 In Safari tap **Share → Add to Home Screen**. Beam then opens full-screen like an app and loads instantly, even offline.
 
-> iOS keeps the Home Screen app's storage separate from Safari. If you pair in Safari first, open the Home Screen app and tap **Scan QR code** to pair it too. The scanner works inside the app, no Safari needed.
+> Pairing belongs to whichever one you pair in: Safari and the Home Screen app keep separate sessions. Open the Home Screen app and tap **Scan QR code** to pair it directly, no Safari needed.
 
 No camera handy? Use **Copy pairing link** on the PC and paste it into **Have a pairing link?** on the iPhone (AirDrop or Messages work well).
 
@@ -37,7 +37,8 @@ The three toggles are saved **per device and per browser** (in that browser's lo
 - Data travels over an encrypted WebRTC channel directly between your two devices. File contents never touch a server.
 - **One-time pairing codes:** the QR/link works once and expires after 5 minutes. A screenshot of an old code is useless, and repeated bad guesses rotate the code.
 - **Verification code:** both screens show the same 4-digit code. Only allow the device if they match.
-- **Paired devices list** with a **Revoke** button per device, plus **Reset pairing** to wipe everything.
+- **Session-only pairing:** nothing about pairing is saved to disk. The computer's address changes every time Beam opens, so old QR codes are dead. **Disconnect**, closing the page or a long outage ends it on both sides.
+- **Paired devices list** (this session) with a **Revoke** button per device.
 - A second device can't hijack an active connection; it is told the computer is busy.
 - File names are sanitized, received text is never rendered as HTML, executable file types are never auto-saved, and a strict Content Security Policy blocks injected scripts.
 - All libraries are bundled locally (`vendor/`), so Beam does not load third-party scripts.

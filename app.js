@@ -5,7 +5,7 @@
    ===================================================================== */
 
 /* ======================= CONFIG ======================= */
-const CFG = Object.assign({ useDefaultStun: true, iceServers: [], turnCredentialsUrl: '', peer: {} }, window.BEAM_CONFIG || {});
+const CFG = Object.assign({ useDefaultStun: true, iceServers: [], turnCredentialsUrl: '', peer: {}, reconnectWindowMs: 60000 }, window.BEAM_CONFIG || {});
 const DEFAULT_STUN = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -53,21 +53,20 @@ async function codeOf(token) {
 /* ======================= STATE ======================= */
 let role, hostId, peer, active = null, activeKey = null, pending = null, lastRx = 0, pingIv = null, wake = null;
 let denied = false, backoff = 1000, gen = 0, hintT = null, peerName = '', peerProto = 1;
-const deviceKey = ls.get('beam.dk') || (() => { const k = rand(16); ls.set('beam.dk', k); return k; })();
 
-// Paired devices: key -> { name, added }. Migrates the old array format.
-const trusted = (() => {
-  let m = new Map();
-  try { m = new Map(Object.entries(JSON.parse(ls.get('beam.trusted2') || '{}') || {})); } catch { /* ignore corrupt data */ }
-  try {
-    const old = JSON.parse(ls.get('beam.trusted') || '[]');
-    if (Array.isArray(old)) for (const k of old) if (typeof k === 'string' && !m.has(k)) m.set(k, { name: 'Paired device', added: 0 });
-    ls.del('beam.trusted');
-    ls.set('beam.trusted2', JSON.stringify(Object.fromEntries(m)));
-  } catch { /* ignore */ }
-  return m;
-})();
-const saveTrusted = () => ls.set('beam.trusted2', JSON.stringify(Object.fromEntries(trusted)));
+// Pairing is session-only. Nothing about it is written to disk: the computer keeps trust in memory,
+// the phone keeps its link in sessionStorage (gone when the tab or app is closed).
+const ss = {
+  get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+  del(k) { try { sessionStorage.removeItem(k); } catch { /* storage unavailable */ } }
+};
+for (const k of ['beam.dk', 'beam.trusted', 'beam.trusted2', 'beam.host', 'beam.join', 'beam.tok', 'beam.forcehost']) ls.del(k); // pairing data saved by older versions
+const GRACE_MS = Math.max(1000, Number(CFG.reconnectWindowMs) || 60000); // how long a dropped connection may auto-reconnect
+const deviceKey = ss.get('beam.dk') || (() => { const k = rand(16); ss.set('beam.dk', k); return k; })();
+const trusted = new Map();      // paired this session: key -> { name, added }
+const purgeTimers = new Map();  // key -> timer that forgets a device whose connection was lost
+let myHostId = null, graceT = null, graceDeadline = 0;
 
 function setStatus(state, text) {
   document.body.dataset.state = state;
@@ -80,6 +79,7 @@ function setStatus(state, text) {
   $('#pairScan').classList.toggle('hide', role !== 'scan');
   $('#btnHost').classList.toggle('hide', role === 'host');
   $('#btnDevices').classList.toggle('hide', role !== 'host');
+  $('#btnDisconnect').classList.toggle('hide', !on);
   $('#autoSaveWrap').classList.toggle('hide', isIOS);
 }
 
@@ -89,17 +89,17 @@ function acceptLink(text) {
   const p = String(text).match(/[#&?]p=([A-Za-z0-9_-]{16,80})/);
   if (!p) return false;
   const t = String(text).match(/[#&?]t=([A-Za-z0-9]{8,64})/);
-  ls.set('beam.join', p[1]);
-  if (t) ls.set('beam.tok', t[1]); else ls.del('beam.tok');
+  ss.set('beam.join', p[1]);
+  if (t) ss.set('beam.tok', t[1]); else ss.del('beam.tok');
   return true;
 }
 function resolveRole() {
   if (location.hash && acceptLink(location.hash)) history.replaceState(null, '', location.pathname + location.search);
-  const j = ls.get('beam.join');
+  const j = ss.get('beam.join');
   if (j) { role = 'join'; hostId = j; return; }
-  if (isMobile && !ls.get('beam.forcehost')) { role = 'scan'; return; }
+  if (isMobile && !ss.get('beam.forcehost')) { role = 'scan'; return; }
   role = 'host';
-  hostId = ls.get('beam.host') || (() => { const k = 'bm' + rand(16); ls.set('beam.host', k); return k; })();
+  hostId = myHostId || (myHostId = 'bm' + rand(16)); // new every time the page opens, so old QR codes are dead
 }
 
 /* ======================= ICE (STUN / TURN) ======================= */
@@ -152,7 +152,9 @@ async function start() {
     if (['network', 'server-error', 'socket-error', 'socket-closed', 'webrtc', 'browser-incompatible'].includes(e.type)) { setStatus('error', 'Reconnecting…'); later(start, Math.min(backoff *= 1.6, 8000)); return; }
     console.warn('peer error', e);
   });
-  if (role === 'join') armHint();
+  // A fresh scan (it carries a one-time code) may wait for the user to tap Allow; a reload with no code is a
+  // reconnect attempt and must not wait forever.
+  if (role === 'join') { armHint(); if (!ss.get('beam.tok')) armGrace(); }
 }
 function armHint() {
   clearTimeout(hintT); hideWarn();
@@ -166,7 +168,7 @@ async function joinNow() {
   if (role !== 'join' || !peer || peer.destroyed || active || denied) return;
   if (pending) { try { pending.close(); } catch { /* ignore */ } pending = null; }
   setStatus('connecting', 'Connecting…');
-  const tok = ls.get('beam.tok') || '';
+  const tok = ss.get('beam.tok') || '';
   if (tok) { $('#joinCode').textContent = await codeOf(tok); $('#joinCodeWrap').classList.remove('hide'); } else $('#joinCodeWrap').classList.add('hide');
   if (role !== 'join' || !peer || active) return;
   const c = peer.connect(hostId, { serialization: 'raw', reliable: true });
@@ -176,13 +178,11 @@ async function joinNow() {
     const m = parse(d);
     if (c !== active) {
       if (m && m.t === 'welcome') {
-        active = c; pending = null; peerProto = Number(m.p) || 1; ls.del('beam.tok'); $('#joinCodeWrap').classList.add('hide');
+        active = c; pending = null; peerProto = Number(m.p) || 1; ss.del('beam.tok'); $('#joinCodeWrap').classList.add('hide');
         onConnected(String(m.name || 'Computer').slice(0, 40), c);
       } else if (m && m.t === 'denied') {
-        denied = true; clearTimeout(hintT);
-        const why = m.reason === 'unpaired' ? 'Scan the QR code on your computer again.' : 'The computer denied this device.';
-        setStatus('error', m.reason === 'unpaired' ? 'Pairing expired' : 'Denied by computer');
-        warn(why);
+        // Pairing is session-only: any refusal means the code is gone, so start over with a fresh QR scan.
+        endSession(m.reason === 'denied' ? 'The computer denied this device.' : 'Pairing expired or ended. Scan the QR code on your computer again.');
       } else if (m && m.t === 'busy') {
         try { c.close(); } catch { /* ignore */ } pending = null;
         setStatus('waiting', 'Computer is busy with another device…'); later(joinNow, 8000);
@@ -219,7 +219,11 @@ async function admit(m) {
     }
   }
   if (active && activeKey !== m.key && Date.now() - lastRx < DEAD_MS) return 'busy';
-  if (known) { const t = trusted.get(m.key); t.name = String(m.name || t.name || 'Device').slice(0, 40); t.seen = Date.now(); saveTrusted(); return null; }
+  if (known) {
+    const t = trusted.get(m.key); t.name = String(m.name || t.name || 'Device').slice(0, 40); t.seen = Date.now();
+    clearTimeout(purgeTimers.get(m.key)); purgeTimers.delete(m.key); // reconnected within the window
+    return null;
+  }
   if (approving) return 'busy';
   approving = true;
   const dlg = $('#approve');
@@ -235,7 +239,6 @@ async function admit(m) {
   if (!ok) return 'denied';
   if (used !== tok) return 'unpaired'; // code rotated while the dialog was open
   trusted.set(m.key, { name: String(m.name || 'Device').slice(0, 40), added: Date.now() });
-  saveTrusted();
   newToken(); // single use: the QR code that just paired is now dead
   return null;
 }
@@ -277,7 +280,7 @@ async function connType(c) {
 }
 function onConnected(name, c) {
   lastRx = Date.now(); peerName = name; clearTimeout(hintT); hideWarn();
-  setStatus('connected', 'Connected to ' + name); startPing(); keepAwake();
+  disarmGrace(); setStatus('connected', 'Connected to ' + name); startPing(); keepAwake();
   toast('Connected to ' + name);
   const upd = async () => { if (active !== c) return; const t = await connType(c); if (t && active === c) $('#statusText').textContent = `Connected to ${name} · ${t}`; };
   setTimeout(upd, 1500); setTimeout(upd, 8000);
@@ -285,12 +288,39 @@ function onConnected(name, c) {
 function onClosed(c) {
   if (pending === c) pending = null;
   if (c !== active) return;
+  const key = activeKey;
   active = null; activeKey = null; stopPing(); releaseWake();
   failTransfers('Connection lost');
-  renderDevices();
-  if (role === 'host') { setStatus('waiting', 'Ready — waiting for a device'); renderQR(); }
-  else { setStatus('connecting', 'Reconnecting…'); later(joinNow, 800); armHint(); }
+  if (role === 'host') {
+    // Keep the device for a short window so a brief drop reconnects by itself; after that it must re-scan.
+    if (key && trusted.has(key)) { clearTimeout(purgeTimers.get(key)); purgeTimers.set(key, setTimeout(() => { forgetDevice(key); renderDevices(); }, GRACE_MS)); }
+    renderDevices(); setStatus('waiting', 'Ready — waiting for a device'); renderQR();
+  } else { setStatus('connecting', 'Reconnecting…'); later(joinNow, 800); armHint(); armGrace(); }
 }
+
+/* ---------- session lifetime: pairing never outlives the open page ---------- */
+function forgetDevice(key) { clearTimeout(purgeTimers.get(key)); purgeTimers.delete(key); trusted.delete(key); }
+function armGrace() { // phone: give up (and require a new scan) if the computer isn't back within the window
+  clearTimeout(graceT); graceDeadline = Date.now() + GRACE_MS;
+  graceT = setTimeout(() => { if (!active && role === 'join') endSession('Connection ended. Scan the QR code on your computer to pair again.'); }, GRACE_MS);
+}
+function disarmGrace() { clearTimeout(graceT); graceDeadline = 0; }
+function endSession(msg) { // phone side: forget the computer completely
+  disarmGrace(); denied = false;
+  ss.del('beam.join'); ss.del('beam.tok');
+  resolveRole(); start();
+  if (msg) { toast(msg); warn(msg); }
+}
+function disconnect() { // user-initiated: both sides forget each other immediately
+  const c = active; if (!c) return;
+  if (role === 'host') { forgetDevice(activeKey); newToken(); } // forget first, so the device can't slip back in
+  tx({ t: 'bye' });
+  setTimeout(() => { // give the goodbye a moment to flush, then drop the link
+    if (role === 'host') { try { c.close(); } catch { /* ignore */ } onClosed(c); toast('Disconnected'); }
+    else endSession('Disconnected. Scan the QR code on your computer to pair again.');
+  }, 200);
+}
+addEventListener('pagehide', e => { if (!e.persisted && active) tx({ t: 'bye' }); }); // closing the page ends the pairing
 function startPing() {
   stopPing();
   pingIv = setInterval(() => {
@@ -305,6 +335,7 @@ function releaseWake() { try { wake && wake.release(); } catch { /* ignore */ } 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (active) { keepAwake(); tx({ t: 'ping' }); }
+  else if (role === 'join' && graceDeadline && Date.now() > graceDeadline) endSession('Connection ended. Scan the QR code on your computer to pair again.'); // timers pause while the phone sleeps
   else if (role === 'join' && !denied) { if (!peer || peer.destroyed || peer.disconnected) start(); else joinNow(); }
 });
 addEventListener('online', () => { if (!active && !denied && role !== 'scan') start(); });
@@ -531,6 +562,11 @@ function onData(c, d) {
   switch (m.t) {
     case 'ping': tx({ t: 'pong' }); break;
     case 'pong': break;
+    case 'bye': { // the other side disconnected or closed its page: forget each other
+      if (role === 'host') { const nm = peerName; forgetDevice(activeKey); newToken(); try { c.close(); } catch { /* ignore */ } onClosed(c); toast(nm + ' disconnected'); }
+      else endSession('The computer disconnected. Scan its QR code to pair again.');
+      break;
+    }
     case 'text': {
       if (typeof m.text !== 'string' || m.text.length > MAX_TEXT * 2) return;
       const x = showText('in', m.text); x.set('');
@@ -640,7 +676,7 @@ function renderDevices() {
     const b = el('button', 'sm danger', 'Revoke');
     b.onclick = () => {
       if (!confirm(`Revoke "${t.name || 'this device'}"? It will need to scan a new QR code to pair again.`)) return;
-      trusted.delete(key); saveTrusted();
+      forgetDevice(key);
       if (activeKey === key && active) { const c = active; try { c.close(); } catch { /* ignore */ } onClosed(c); }
       renderDevices(); toast('Device revoked');
     };
@@ -686,13 +722,15 @@ $('#useLink').onclick = () => {
 $('#btnScan').onclick = openScanner;
 $('#scanClose').onclick = closeScanner;
 $('#scanDlg').addEventListener('close', closeScanner);
-$('#btnHost').onclick = () => { ls.del('beam.join'); ls.del('beam.tok'); ls.set('beam.forcehost', '1'); resolveRole(); start(); };
+$('#btnHost').onclick = () => { disarmGrace(); ss.del('beam.join'); ss.del('beam.tok'); ss.set('beam.forcehost', '1'); resolveRole(); start(); };
 $('#btnDevices').onclick = () => { renderDevices(); try { $('#devDlg').showModal(); } catch { /* ignore */ } };
 $('#devClose').onclick = () => $('#devDlg').close();
+$('#btnDisconnect').onclick = disconnect;
 $('#btnReset').onclick = () => {
-  if (!confirm('Reset pairing? All devices will need to pair again.')) return;
-  ls.del('beam.join'); ls.del('beam.tok'); ls.del('beam.host'); ls.del('beam.forcehost'); trusted.clear(); saveTrusted();
-  resolveRole(); start(); toast('Pairing reset');
+  if (!confirm('End pairing? You will need to scan a new QR code.')) return;
+  if (active) { disconnect(); return; }
+  if (role === 'host') { for (const k of [...trusted.keys()]) forgetDevice(k); newToken(); renderQR(); renderDevices(); toast('Pairing reset'); }
+  else endSession('Pairing reset. Scan the QR code on your computer.');
 };
 
 /* ======================= INPUT WIRING ======================= */

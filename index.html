@@ -38,6 +38,7 @@
         <button class="sec sm" id="shareLink">Share link</button>
       </div>
       <div class="mute" style="margin-top:10px">No camera handy? Send the link to your iPhone (AirDrop, Messages). The code refreshes every 5 minutes and works once.</div>
+      <div class="mute" style="margin-top:6px">Pairing lasts only while Beam stays open. Closing the page or disconnecting means scanning again.</div>
     </div>
 
     <div id="pairJoin" class="hide">
@@ -97,6 +98,7 @@
   </details>
 
   <footer>
+    <button class="link hide" id="btnDisconnect">Disconnect</button>
     <button class="link hide" id="btnDevices">Paired devices</button>
     <button class="link hide" id="btnTemp">Clear received files</button>
     <button class="link" id="btnReset">Reset pairing</button>
@@ -114,7 +116,7 @@
 </dialog>
 
 <dialog id="devDlg">
-  <h3 style="margin-top:0">Paired devices</h3>
+  <h3 style="margin-top:0">Paired devices <span class="mute" style="font-weight:400">(this session)</span></h3>
   <div id="devList"></div>
   <div class="row" style="margin-top:14px"><button class="sec" id="devClose">Done</button></div>
 </dialog>

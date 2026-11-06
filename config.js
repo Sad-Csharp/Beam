@@ -12,6 +12,10 @@ window.BEAM_CONFIG = {
   // See turn-worker/ for a ready-made Cloudflare Worker.
   turnCredentialsUrl: '',
 
+  // How long (ms) a dropped connection may reconnect by itself before the pairing ends and a new
+  // QR scan is required. Closing the page or tapping Disconnect always ends the pairing immediately.
+  reconnectWindowMs: 60000,
+
   // Optional: your own PeerJS signaling server (otherwise the free public one is used):
   //   { host: 'peer.example.com', port: 443, secure: true, path: '/' }
   peer: {}
