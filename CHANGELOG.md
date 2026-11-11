@@ -4,7 +4,7 @@ All notable changes to Beam are listed here, newest first. Beam uses [semantic v
 MAJOR for breaking changes, MINOR for new features, PATCH for fixes and cosmetic tweaks. Versions only go up and are
 never reused; a revert ships as a new patch. Entries before 3.0.0 were written afterwards from the commit history.
 
-## [3.1.0]
+## [3.1.0] - 2026-11-11
 
 ### Added
 - Short grace period when you switch tabs or apps: the pairing is kept for up to 2 minutes (`awayWindowMs` in `config.js`) and the other device shows "· away". Coming back resumes instantly.
