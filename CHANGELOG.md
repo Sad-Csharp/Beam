@@ -4,6 +4,18 @@ All notable changes to Beam are listed here, newest first. Beam uses [semantic v
 MAJOR for breaking changes, MINOR for new features, PATCH for fixes and cosmetic tweaks. Versions only go up and are
 never reused; a revert ships as a new patch. Entries before 3.0.0 were written afterwards from the commit history.
 
+## [3.1.0]
+
+### Added
+- Short grace period when you switch tabs or apps: the pairing is kept for up to 2 minutes (`awayWindowMs` in `config.js`) and the other device shows "· away". Coming back resumes instantly.
+
+### Changed
+- Closing or reloading a page no longer ends the pairing instantly; it ends after the grace period (reload reconnects by itself). **Disconnect** still ends it immediately.
+- A backgrounded device is no longer declared dead by the connection check while it is away.
+
+### Fixed
+- Switching tabs on iPhone Safari reset the connection immediately and required a new QR scan.
+
 ## [3.0.0] - 2026-11-05
 ### Changed
 - **Breaking:** pairing is now session-only. Nothing about it is saved to disk. Closing the page on either device, tapping Disconnect, or losing the connection for longer than the reconnect window (60 seconds by default) ends the pairing, and connecting again needs a fresh QR scan. Devices paired with earlier versions must be paired again.

@@ -5,7 +5,7 @@
    ===================================================================== */
 
 /* ======================= CONFIG ======================= */
-const CFG = Object.assign({ useDefaultStun: true, iceServers: [], turnCredentialsUrl: '', peer: {}, reconnectWindowMs: 60000 }, window.BEAM_CONFIG || {});
+const CFG = Object.assign({ useDefaultStun: true, iceServers: [], turnCredentialsUrl: '', peer: {}, reconnectWindowMs: 60000, awayWindowMs: 120000 }, window.BEAM_CONFIG || {});
 const DEFAULT_STUN = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -63,10 +63,11 @@ const ss = {
 };
 for (const k of ['beam.dk', 'beam.trusted', 'beam.trusted2', 'beam.host', 'beam.join', 'beam.tok', 'beam.forcehost']) ls.del(k); // pairing data saved by older versions
 const GRACE_MS = Math.max(1000, Number(CFG.reconnectWindowMs) || 60000); // how long a dropped connection may auto-reconnect
+const AWAY_MS = Math.max(GRACE_MS, Number(CFG.awayWindowMs) || 120000);   // how long a device may be in the background (other tab/app) before the pairing is given up
 const deviceKey = ss.get('beam.dk') || (() => { const k = rand(16); ss.set('beam.dk', k); return k; })();
 const trusted = new Map();      // paired this session: key -> { name, added }
 const purgeTimers = new Map();  // key -> timer that forgets a device whose connection was lost
-let myHostId = null, graceT = null, graceDeadline = 0;
+let myHostId = null, graceT = null, graceDeadline = 0, peerAwayUntil = 0, curType = '';
 
 function setStatus(state, text) {
   document.body.dataset.state = state;
@@ -282,8 +283,14 @@ function onConnected(name, c) {
   lastRx = Date.now(); peerName = name; clearTimeout(hintT); hideWarn();
   disarmGrace(); setStatus('connected', 'Connected to ' + name); startPing(); keepAwake();
   toast('Connected to ' + name);
-  const upd = async () => { if (active !== c) return; const t = await connType(c); if (t && active === c) $('#statusText').textContent = `Connected to ${name} · ${t}`; };
+  peerAwayUntil = 0; curType = '';
+  const upd = async () => { if (active !== c) return; const t = await connType(c); if (t && active === c) { curType = t; paintStatus(); } };
   setTimeout(upd, 1500); setTimeout(upd, 8000);
+}
+// "Connected to iPhone · Direct · away"
+function paintStatus() {
+  if (!active) return;
+  $('#statusText').textContent = `Connected to ${peerName}${curType ? ' · ' + curType : ''}${peerAwayUntil ? ' · away' : ''}`;
 }
 function onClosed(c) {
   if (pending === c) pending = null;
@@ -293,16 +300,16 @@ function onClosed(c) {
   failTransfers('Connection lost');
   if (role === 'host') {
     // Keep the device for a short window so a brief drop reconnects by itself; after that it must re-scan.
-    if (key && trusted.has(key)) { clearTimeout(purgeTimers.get(key)); purgeTimers.set(key, setTimeout(() => { forgetDevice(key); renderDevices(); }, GRACE_MS)); }
+    if (key && trusted.has(key)) { const wait = Math.max(GRACE_MS, peerAwayUntil - Date.now()); clearTimeout(purgeTimers.get(key)); purgeTimers.set(key, setTimeout(() => { forgetDevice(key); renderDevices(); }, wait)); }
     renderDevices(); setStatus('waiting', 'Ready — waiting for a device'); renderQR();
-  } else { setStatus('connecting', 'Reconnecting…'); later(joinNow, 800); armHint(); armGrace(); }
+  } else { setStatus('connecting', 'Reconnecting…'); later(joinNow, 800); armHint(); armGrace(document.hidden ? AWAY_MS : GRACE_MS); }
 }
 
 /* ---------- session lifetime: pairing never outlives the open page ---------- */
 function forgetDevice(key) { clearTimeout(purgeTimers.get(key)); purgeTimers.delete(key); trusted.delete(key); }
-function armGrace() { // phone: give up (and require a new scan) if the computer isn't back within the window
-  clearTimeout(graceT); graceDeadline = Date.now() + GRACE_MS;
-  graceT = setTimeout(() => { if (!active && role === 'join') endSession('Connection ended. Scan the QR code on your computer to pair again.'); }, GRACE_MS);
+function armGrace(ms = GRACE_MS) { // phone: give up (and require a new scan) if the computer isn't back within the window
+  clearTimeout(graceT); graceDeadline = Date.now() + ms;
+  graceT = setTimeout(() => { if (!active && role === 'join') endSession('Connection ended. Scan the QR code on your computer to pair again.'); }, ms);
 }
 function disarmGrace() { clearTimeout(graceT); graceDeadline = 0; }
 function endSession(msg) { // phone side: forget the computer completely
@@ -320,12 +327,18 @@ function disconnect() { // user-initiated: both sides forget each other immediat
     else endSession('Disconnected. Scan the QR code on your computer to pair again.');
   }, 200);
 }
-addEventListener('pagehide', e => { if (!e.persisted && active) tx({ t: 'bye' }); }); // closing the page ends the pairing
+// Switching tabs or apps is not closing. iOS Safari even fires "pagehide" for it, so we never treat these as a
+// goodbye: we tell the other device we're "away" and it waits (up to the reconnect window) instead of resetting.
+// Only the Disconnect button ends a pairing on the spot; a page that is really gone is noticed by the other side
+// when the link drops, and the pairing then ends once the reconnect window passes.
+addEventListener('pagehide', () => { tx({ t: 'away' }); });
 function startPing() {
   stopPing();
   pingIv = setInterval(() => {
     if (!active) return;
-    if (Date.now() - lastRx > DEAD_MS) { const c = active; try { c.close(); } catch { /* ignore */ } onClosed(c); return; }
+    // Don't call the link dead while this page is in the background (its timers are throttled) or while the
+    // other device told us it is away; both come back with a fresh check.
+    if (Date.now() - lastRx > DEAD_MS && !document.hidden && Date.now() > peerAwayUntil) { const c = active; try { c.close(); } catch { /* ignore */ } onClosed(c); return; }
     tx({ t: 'ping' });
   }, PING_MS);
 }
@@ -333,13 +346,16 @@ function stopPing() { clearInterval(pingIv); pingIv = null; }
 async function keepAwake() { try { if ('wakeLock' in navigator && !wake) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => { wake = null; }); } } catch { /* not allowed */ } }
 function releaseWake() { try { wake && wake.release(); } catch { /* ignore */ } wake = null; }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  if (active) { keepAwake(); tx({ t: 'ping' }); }
+  if (document.visibilityState !== 'visible') { tx({ t: 'away' }); return; }
+  if (active) { lastRx = Date.now(); keepAwake(); tx({ t: 'back' }); tx({ t: 'ping' }); } // fresh start for the dead-link check
   else if (role === 'join' && graceDeadline && Date.now() > graceDeadline) endSession('Connection ended. Scan the QR code on your computer to pair again.'); // timers pause while the phone sleeps
   else if (role === 'join' && !denied) { if (!peer || peer.destroyed || peer.disconnected) start(); else joinNow(); }
 });
 addEventListener('online', () => { if (!active && !denied && role !== 'scan') start(); });
-addEventListener('pageshow', e => { if (e.persisted && !active && role !== 'scan') start(); });
+addEventListener('pageshow', e => {
+  if (!e.persisted) return;
+  if (active) { lastRx = Date.now(); tx({ t: 'back' }); } else if (role !== 'scan') start();
+});
 
 /* ======================= TRANSPORT ======================= */
 function tx(obj) { try { if (active && active.dataChannel.readyState === 'open') { active.dataChannel.send(JSON.stringify(obj)); return true; } } catch { /* channel gone */ } return false; }
@@ -541,6 +557,7 @@ let inc = null;
 function onData(c, d) {
   lastRx = Date.now();
   if (typeof d !== 'string') { // binary chunk
+    if (peerAwayUntil) { peerAwayUntil = 0; paintStatus(); }
     if (!inc) return;
     const buf = d instanceof ArrayBuffer ? d : ArrayBuffer.isView(d) ? d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength) : null;
     if (!buf) return;
@@ -559,9 +576,12 @@ function onData(c, d) {
     return;
   }
   const m = parse(d); if (!m || typeof m.t !== 'string') return;
+  if (peerAwayUntil && m.t !== 'ping' && m.t !== 'pong' && m.t !== 'away') { peerAwayUntil = 0; paintStatus(); } // real traffic: it's back
   switch (m.t) {
     case 'ping': tx({ t: 'pong' }); break;
     case 'pong': break;
+    case 'away': peerAwayUntil = Date.now() + AWAY_MS; paintStatus(); break; // other tab/app in front: wait for it
+    case 'back': break;
     case 'bye': { // the other side disconnected or closed its page: forget each other
       if (role === 'host') { const nm = peerName; forgetDevice(activeKey); newToken(); try { c.close(); } catch { /* ignore */ } onClosed(c); toast(nm + ' disconnected'); }
       else endSession('The computer disconnected. Scan its QR code to pair again.');

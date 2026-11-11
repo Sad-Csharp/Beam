@@ -13,8 +13,12 @@ window.BEAM_CONFIG = {
   turnCredentialsUrl: '',
 
   // How long (ms) a dropped connection may reconnect by itself before the pairing ends and a new
-  // QR scan is required. Closing the page or tapping Disconnect always ends the pairing immediately.
+  // QR scan is required. Tapping Disconnect ends the pairing immediately.
   reconnectWindowMs: 60000,
+
+  // How long (ms) either device may sit in the background (another tab or app in front) before the
+  // pairing is given up. Switching away and back inside this time changes nothing.
+  awayWindowMs: 120000,
 
   // Optional: your own PeerJS signaling server (otherwise the free public one is used):
   //   { host: 'peer.example.com', port: 443, secure: true, path: '/' }
